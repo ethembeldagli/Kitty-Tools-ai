@@ -25,6 +25,7 @@ Kitty-Tools is a comprehensive suite of utilities designed for enhancing and ana
 ## ✨ Key Features
 
 - **Answer Retrieval System** - Obtain answers for any Kahoot quiz using Quiz ID
+- **AI Quick Answer** - Ask Groq, Gemini, or OpenAI when a Quiz ID is unavailable; Auto returns the fastest valid configured response
 - **Multi-bot Participation** - Create multiple automated quiz participants with configurable behaviors **NOTE; YOU CAN NOT USE THIS OPTION IN GITHUB CODESPACE**
 - **Cross-Platform Support** - Works on Windows, macOS, Linux, and Android (via Termux)
 - **Modern GUI Interface** - Sleek, intuitive graphical user interface with dark theme
@@ -126,6 +127,19 @@ The Answer Viewer module allows you to retrieve answers for Kahoot quizzes:
 
 4. View answers displayed in an organized format
 5. Optionally export answers to a text file
+
+#### AI Quick Answer (without a Quiz ID)
+
+The enhanced console client and GUI also include an AI helper for questions that are not available through a quiz ID. From the repository root, run `python main.py` and choose **Answer Hack** for the console client or **GUI** for the desktop interface. You can launch the console client directly with `python src/client.py`.
+
+- In the console client, press **Enter** at the Quiz ID prompt, then enter the question and each answer choice on its own line.
+- In the GUI, leave the Quiz ID field blank and use **AI Quick Answer**. Paste the question and one answer choice per line. The AI can suggest one or multiple correct choices.
+- The provider API integrations are built in, but **API keys are not**. Bring your own key by setting `GROQ_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), and/or `OPENAI_API_KEY`, or enter keys in the GUI. The console prompts for keys if none are configured. Keys entered in the console are saved locally; in the GUI, **Remember entered keys on this device** is on by default. Uncheck it to use a key for the current run only.
+- Saved keys live in `ai_keys.json` under the per-user `kitty-tools` config directory (Linux: `~/.config/kitty-tools`; macOS: `~/Library/Application Support/kitty-tools`; Windows: `%APPDATA%\kitty-tools`). They are plain text, not encrypted; POSIX permissions are restricted to the current user. Use **Forget saved keys** in the GUI or delete `ai_keys.json` to remove them. `KITTY_TOOLS_CONFIG_DIR` overrides the config directory.
+- **Auto** sends the question to each configured provider concurrently and returns the first valid response. This favors speed, but may use quota or incur usage charges with every configured provider. Choose a specific provider to send only one request.
+- Questions and choices are sent directly to the selected AI provider(s). The AI helper does not capture a live screen or submit answers to a Kahoot game. AI output can be wrong; confidence is a model estimate, not a guarantee. Review suggestions before using them.
+
+Optional model overrides are available with `GROQ_MODEL`, `GEMINI_MODEL`, and `OPENAI_MODEL`.
 
 ### 2. Kahoot Flooder
 

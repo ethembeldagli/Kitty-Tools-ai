@@ -14,6 +14,18 @@ from datetime import datetime
 from functools import partial
 import re
 
+# The AI answer helper is a sibling module under src/.
+SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+from ai_answers import (
+    AIAnswerClient,
+    clear_saved_api_keys,
+    load_saved_api_keys,
+    save_api_keys,
+    saved_key_file_path,
+)
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QTabWidget, QTextEdit, 
                              QScrollArea, QFrame, QMessageBox, QProgressBar,
@@ -618,6 +630,19 @@ class KahootWorker(QThread):
                 else:
                     self.error.emit("Failed to export answers to file")
             
+            elif self.operation == "ai_answer":
+                self.progress.emit(10, "Preparing AI request...")
+                payload = self.data
+                client = AIAnswerClient(api_keys=payload.get("api_keys"))
+                self.progress.emit(25, "Asking configured AI provider(s)...")
+                result = client.answer_question(
+                    payload.get("question"),
+                    payload.get("choices"),
+                    payload.get("provider", "auto"),
+                )
+                self.progress.emit(100, "Answer ready.")
+                self.finished.emit(result)
+
             elif self.operation == "run_flooder":
                 self.progress.emit(10, "Checking for Node.js...")
                 
@@ -797,6 +822,93 @@ class AnswerViewerTab(QWidget):
         
         search_card.layout.addLayout(search_layout)
         
+        # A quiz UUID is optional: users can enter a question and its choices here.
+        ai_card = CardFrame()
+        ai_layout = QVBoxLayout()
+        ai_title = QLabel("AI Quick Answer — no Quiz ID needed")
+        ai_title.setProperty("heading", "true")
+        ai_description = QLabel(
+            "Paste a question and one choice per line. Auto races the configured providers "
+            "and uses the first valid answer; with multiple keys, each provider may incur usage. "
+            "The AI can return multiple correct choices, but its suggestions are not guaranteed. "
+            "Questions are sent directly to the selected provider(s)."
+        )
+        ai_description.setWordWrap(True)
+
+        provider_row = QHBoxLayout()
+        provider_label = QLabel("Provider:")
+        self.ai_provider = QComboBox()
+        self.ai_provider.addItem("Auto (fastest valid response)", "auto")
+        self.ai_provider.addItem("Groq", "groq")
+        self.ai_provider.addItem("Gemini", "gemini")
+        self.ai_provider.addItem("OpenAI", "openai")
+        provider_row.addWidget(provider_label)
+        provider_row.addWidget(self.ai_provider)
+        provider_row.addStretch()
+
+        key_group = QGroupBox("API keys (environment variables also work)")
+        key_grid = QGridLayout(key_group)
+        self.ai_api_keys = {}
+        saved_api_keys = load_saved_api_keys()
+        provider_key_info = [
+            ("groq", "Groq", "GROQ_API_KEY"),
+            ("gemini", "Gemini", "GEMINI_API_KEY / GOOGLE_API_KEY"),
+            ("openai", "OpenAI", "OPENAI_API_KEY"),
+        ]
+        for row, (provider_id, provider_name, environment_name) in enumerate(provider_key_info):
+            key_grid.addWidget(QLabel(provider_name + " key:"), row, 0)
+            key_input = QLineEdit()
+            key_input.setEchoMode(QLineEdit.Password)
+            if saved_api_keys.get(provider_id):
+                key_input.setPlaceholderText("Saved locally; leave blank to use saved key or " + environment_name)
+            else:
+                key_input.setPlaceholderText("Read from " + environment_name + " when blank")
+            self.ai_api_keys[provider_id] = key_input
+            key_grid.addWidget(key_input, row, 1)
+
+        self.ai_remember_keys = QCheckBox("Remember entered keys on this device")
+        self.ai_remember_keys.setChecked(True)
+        self.forget_ai_keys_button = QPushButton("Forget saved keys")
+        self.forget_ai_keys_button.clicked.connect(self.forget_saved_ai_keys)
+        self.ai_key_storage_note = QLabel(
+            "Saved to {0}. The file is plain text (not encrypted); POSIX permissions are restricted to your user.".format(
+                saved_key_file_path()
+            )
+        )
+        self.ai_key_storage_note.setWordWrap(True)
+        key_grid.addWidget(self.ai_remember_keys, len(provider_key_info), 0, 1, 2)
+        key_grid.addWidget(self.forget_ai_keys_button, len(provider_key_info) + 1, 0, 1, 2)
+        key_grid.addWidget(self.ai_key_storage_note, len(provider_key_info) + 2, 0, 1, 2)
+
+        question_label = QLabel("Question")
+        self.ai_question = QTextEdit()
+        self.ai_question.setPlaceholderText("Type or paste the question here")
+        self.ai_question.setMaximumHeight(78)
+        choices_label = QLabel("Answer choices (one per line)")
+        self.ai_choices = QTextEdit()
+        self.ai_choices.setPlaceholderText("Enter at least two choices")
+        self.ai_choices.setMaximumHeight(110)
+
+        self.ai_answer_button = QPushButton("Ask AI")
+        self.ai_answer_button.setProperty("accent", "true")
+        self.ai_answer_button.clicked.connect(self.answer_with_ai)
+        self.ai_result = QTextEdit()
+        self.ai_result.setReadOnly(True)
+        self.ai_result.setPlaceholderText("AI answer suggestions will appear here.")
+        self.ai_result.setMaximumHeight(145)
+
+        ai_layout.addWidget(ai_title)
+        ai_layout.addWidget(ai_description)
+        ai_layout.addLayout(provider_row)
+        ai_layout.addWidget(key_group)
+        ai_layout.addWidget(question_label)
+        ai_layout.addWidget(self.ai_question)
+        ai_layout.addWidget(choices_label)
+        ai_layout.addWidget(self.ai_choices)
+        ai_layout.addWidget(self.ai_answer_button)
+        ai_layout.addWidget(self.ai_result)
+        ai_card.layout.addLayout(ai_layout)
+
         info_card = CardFrame()
         info_layout = QVBoxLayout()
         
@@ -850,6 +962,7 @@ class AnswerViewerTab(QWidget):
         answers_card.layout.addLayout(answers_layout)
         
         layout.addWidget(search_card)
+        layout.addWidget(ai_card)
         layout.addWidget(info_card)
         layout.addWidget(answers_card, 1)
         
@@ -859,12 +972,16 @@ class AnswerViewerTab(QWidget):
         quiz_id = self.id_input.text().strip()
         
         if not quiz_id:
-            QMessageBox.warning(
-                self, 
-                "Input Error", 
-                "Please enter a Kahoot Quiz ID or Game PIN",
-                QMessageBox.Ok
-            )
+            if self.ai_question.toPlainText().strip():
+                self.answer_with_ai()
+            else:
+                QMessageBox.information(
+                    self,
+                    "No Quiz ID",
+                    "Enter a question and its answer choices in the AI Quick Answer panel, "
+                    "then click Ask AI. A blank Quiz ID cannot be used to read a live game automatically.",
+                    QMessageBox.Ok
+                )
             return
         
         self.loading_overlay.set_progress(0, "Initializing...")
@@ -876,6 +993,102 @@ class AnswerViewerTab(QWidget):
         self.worker.error.connect(self.handle_error)
         self.worker.start()
     
+    def answer_with_ai(self):
+        question = self.ai_question.toPlainText().strip()
+        choices = [line.strip() for line in self.ai_choices.toPlainText().splitlines() if line.strip()]
+        if not question:
+            QMessageBox.warning(self, "Question required", "Enter a question for the AI to solve.", QMessageBox.Ok)
+            return
+        if len(choices) < 2:
+            QMessageBox.warning(
+                self,
+                "Answer choices required",
+                "Enter at least two answer choices, one per line.",
+                QMessageBox.Ok,
+            )
+            return
+
+        api_keys = {
+            provider: field.text().strip()
+            for provider, field in self.ai_api_keys.items()
+            if field.text().strip()
+        }
+        if self.ai_remember_keys.isChecked() and api_keys:
+            try:
+                save_api_keys(api_keys)
+            except OSError as exc:
+                QMessageBox.warning(
+                    self,
+                    "Could not save API keys",
+                    "The answer request will continue, but the keys were not saved locally: {0}".format(exc),
+                    QMessageBox.Ok,
+                )
+        payload = {
+            "question": question,
+            "choices": choices,
+            "provider": self.ai_provider.currentData() or "auto",
+            "api_keys": api_keys,
+        }
+        self.ai_answer_button.setEnabled(False)
+        self.load_button.setEnabled(False)
+        self.loading_overlay.set_progress(0, "Preparing AI request...")
+        self.loading_overlay.show()
+
+        self.worker = KahootWorker("ai_answer", payload)
+        self.worker.progress.connect(self.loading_overlay.set_progress)
+        self.worker.finished.connect(self.handle_ai_answer)
+        self.worker.error.connect(self.handle_error)
+        self.worker.start()
+
+    def handle_ai_answer(self, result):
+        self.loading_overlay.hide()
+        self.ai_answer_button.setEnabled(True)
+        self.load_button.setEnabled(True)
+
+        lines = ["Selected answer(s):"]
+        for index, answer in zip(result.get("selected_indexes", []), result.get("selected_answers", [])):
+            lines.append("{0}. {1}".format(index, answer))
+        lines.extend([
+            "",
+            "Provider: {0} ({1})".format(result.get("provider_name", "AI"), result.get("model", "")),
+            "Response time: {0} ms".format(result.get("latency_ms", "?")),
+            "Model-estimated confidence: {0:.0%} (not a guarantee)".format(result.get("confidence", 0.5)),
+        ])
+        if result.get("explanation"):
+            lines.extend(["", "Reasoning: " + result["explanation"]])
+        self.ai_result.setPlainText("\n".join(lines))
+
+    def forget_saved_ai_keys(self):
+        try:
+            clear_saved_api_keys()
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Could not remove saved keys",
+                "The local key file could not be removed: {0}".format(exc),
+                QMessageBox.Ok,
+            )
+            return
+        environment_names = {
+            "groq": "GROQ_API_KEY",
+            "gemini": "GEMINI_API_KEY / GOOGLE_API_KEY",
+            "openai": "OPENAI_API_KEY",
+        }
+        for provider, field in self.ai_api_keys.items():
+            field.clear()
+            field.setPlaceholderText("Read from " + environment_names[provider] + " when blank")
+        self.ai_key_storage_note.setText(
+            "Saved keys were removed from {0}. Environment variables remain available.".format(
+                saved_key_file_path()
+            )
+        )
+        QMessageBox.information(
+            self,
+            "Saved keys removed",
+            "Locally saved AI API keys were removed. Environment-variable keys were not changed.",
+            QMessageBox.Ok,
+        )
+
     def handle_quiz_loaded(self, kahoot):
         self.loading_overlay.hide()
         self.current_kahoot = kahoot
@@ -944,6 +1157,8 @@ class AnswerViewerTab(QWidget):
     
     def handle_error(self, error_msg):
         self.loading_overlay.hide()
+        self.ai_answer_button.setEnabled(True)
+        self.load_button.setEnabled(True)
         
         QMessageBox.critical(
             self,

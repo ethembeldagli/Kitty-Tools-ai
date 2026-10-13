@@ -1,1 +1,5 @@
 __pycache__
+.env
+*.env
+ai_keys.json
+.ai-keys-*.tmp

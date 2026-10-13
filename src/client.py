@@ -8,10 +8,12 @@ import re
 import threading
 import random
 import ssl
+import getpass
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse, parse_qs
 from http.client import InvalidURL
+from ai_answers import AIAnswerClient, AIAnswerError, save_api_keys, saved_key_file_path
 
 # Dependency management with graceful fallbacks
 DEPENDENCIES = {
@@ -494,11 +496,15 @@ class KahootClientUI:
     
     @staticmethod
     def get_quiz_id():
+        print(f"{ColorScheme.CYAN}Tip: press Enter without a Quiz ID to use the AI quick-answer helper.{ColorScheme.RESET}")
         while True:
             Write.Print(f"┌─[Enter Kahoot-ID] <> [User-Input]\n", Colors.white, interval=0.000)
             Write.Print(f"└─────► ", Colors.white, interval=0.000)
             user_input = input(ColorScheme.PRETTY)
             
+            if not user_input.strip():
+                return ""
+
             if user_input.isdigit():
                 print(f"{ColorScheme.ORANGE}({ColorScheme.GREEN}!{ColorScheme.ORANGE}) Detected a game PIN. Attempting to fetch the quiz ID...")
                 result = KahootAPI.get_quiz_id_from_pin(user_input)
@@ -523,6 +529,79 @@ class KahootClientUI:
                     if retry != 'y':
                         return None
     
+    @staticmethod
+    def run_ai_answer_session():
+        """Ask AI providers about manually entered questions when no quiz ID is available."""
+        client = AIAnswerClient()
+        api_keys = {}
+        if not client.available_providers():
+            print(f"{ColorScheme.YELLOW}No provider API key found in the environment.{ColorScheme.RESET}")
+            print("Enter one or more API keys; they will be saved in your local user config unless saving fails.")
+            for provider, config in client.PROVIDERS.items():
+                try:
+                    key = getpass.getpass("{0} API key (blank to skip): ".format(config["name"])).strip()
+                except KeyboardInterrupt:
+                    print(f"\n{ColorScheme.YELLOW}AI answer session cancelled.{ColorScheme.RESET}")
+                    return
+                if key:
+                    api_keys[provider] = key
+            if api_keys:
+                try:
+                    save_api_keys(api_keys)
+                    print("Saved API keys locally to {0}".format(saved_key_file_path()))
+                except OSError as exc:
+                    print("Warning: could not save API keys locally: {0}".format(exc))
+            client = AIAnswerClient(api_keys=api_keys)
+
+        if not client.available_providers():
+            print(f"{ColorScheme.RED}No API key found. Set GROQ_API_KEY, GEMINI_API_KEY/GOOGLE_API_KEY, or OPENAI_API_KEY and try again.{ColorScheme.RESET}")
+            return
+
+        while True:
+            question = input(f"\n{ColorScheme.CYAN}Question (blank to return): {ColorScheme.RESET}").strip()
+            if not question:
+                return
+
+            print("Enter each answer choice on its own line; press Enter on a blank line when finished.")
+            choices = []
+            while True:
+                choice = input("  Choice {0}: ".format(len(choices) + 1)).strip()
+                if not choice:
+                    break
+                choices.append(choice)
+            if len(choices) < 2:
+                print(f"{ColorScheme.YELLOW}Please enter at least two choices.{ColorScheme.RESET}")
+                continue
+
+            try:
+                result = client.answer_question(question, choices, provider="auto")
+            except AIAnswerError as exc:
+                print(f"{ColorScheme.RED}AI answer failed: {exc}{ColorScheme.RESET}")
+                if input("Update or replace a provider API key? (y/N): ").strip().lower() == "y":
+                    replacement_keys = {}
+                    for provider, config in client.PROVIDERS.items():
+                        key = getpass.getpass("{0} API key (blank to leave unchanged): ".format(config["name"])).strip()
+                        if key:
+                            replacement_keys[provider] = key
+                    if replacement_keys:
+                        try:
+                            save_api_keys(replacement_keys)
+                            print("Updated saved keys in {0}".format(saved_key_file_path()))
+                        except OSError as save_error:
+                            print("Warning: could not save API keys locally: {0}".format(save_error))
+                        client = AIAnswerClient(api_keys=replacement_keys)
+                continue
+
+            print(f"\n{ColorScheme.GREEN}Fastest valid response: {result['provider_name']} / {result['model']} ({result['latency_ms']} ms){ColorScheme.RESET}")
+            print(f"{ColorScheme.GREEN}Suggested answer(s):{ColorScheme.RESET}")
+            for index, answer in zip(result["selected_indexes"], result["selected_answers"]):
+                print("  {0}. {1}".format(index, answer))
+            print("Model-estimated confidence: {0:.0%} (not a guarantee)".format(result["confidence"]))
+            if result.get("explanation"):
+                print("Reasoning: " + result["explanation"])
+            if input("Answer another question? (y/N): ").strip().lower() != "y":
+                return
+
     @staticmethod
     def display_answers(kahoot):
         """Display quiz answers with proper formatting and color coding."""
@@ -606,6 +685,9 @@ def start_kahoot():
             KahootClientUI.display_intro()
             
             quiz_id = KahootClientUI.get_quiz_id()
+            if quiz_id == "":
+                KahootClientUI.run_ai_answer_session()
+                break
             if not quiz_id:
                 print(f"{ColorScheme.RED}Operation cancelled.")
                 break
